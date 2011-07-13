@@ -1,0 +1,35 @@
+README for addSourceControl
+
+Descriptions
+------------
+
+The source files enclosed in this zip files are:
+
+AddSourceControl.dbl
+This is a Synergy/DE Console application that allows you to quickly add source control
+information into a Workbench workspace/project
+
+processVPJ.dbl
+Adds source control to project files
+
+processVPW.DBL
+Adds source control to projects files, using list of projects in workspace
+
+
+
+Modification history
+--------------------
+
+20th Sep 2010
+  Initial version
+
+
+Submission details
+------------------
+
+Author:                 William Hawkins
+Company:                Synergex
+Email:                  william.hawkins@synergex.com
+Minimum version:        v9.3
+Platforms:              Windows
+

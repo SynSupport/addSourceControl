@@ -1,0 +1,189 @@
+;****************************************************************************
+; This routine process's a SlickEdit workspace file
+; and remove OEMVendorName attribute.
+
+function processVPW, boolean
+    req in  vpwFilename     ,string
+    req in  logChan         ,i
+    endparams
+
+    literal
+        oemCheck        ,a* ,' OEMVendorName='
+;;<Workspace Version="10.0" VendorName="SlickEdit" OEMVendorName="Synergy/DE Workbench 9.3.1b">
+        projectTag      ,a* ,'<Project File='
+;;      <Project File="addSourceControl/AddSourceControl.vpj" />
+
+    stack record
+        newFilename ,string
+        bufr        ,a1000
+        iChan       ,i4
+        oChan       ,i4
+        pos         ,i4
+        ok          ,boolean
+        rootFolder  ,string
+        pos2        ,i4
+proc
+
+    ok = true
+
+    pos = %rvstr(1, vpwFilename, '\')
+    if(pos)
+        rootFolder = vpwFilename(1,pos)
+
+    newFilename = vpwFilename + '_new'
+
+    try
+    begin
+        open(iChan=%syn_freechn, U, vpwFilename) [ERR=vpwOpenUpdateFailure]
+        close iChan
+
+        open(iChan=%syn_freechn, I, vpwFilename) [ERR=vpwOpenFailure]
+        open(oChan=%syn_freechn, O, newFilename) [ERR=newOpenFailure]
+
+        repeat
+        begin
+            reads(iChan, bufr, vpwEof)
+
+            if(pos = %instr(1, bufr, oemCheck))
+            begin
+                if(bufr(pos+%size(oemCheck):1) == '"')
+                begin
+                    pos2 = %instr(pos+%size(oemCheck)+1, bufr, '"')
+                    if(pos > 1) then
+                    begin
+                        using pos2 select
+                        (0),
+                            nop
+                        (%trim(bufr)),
+                            bufr = bufr(1, pos-1)
+                        (),
+                            bufr = bufr(1, pos-1) + bufr(pos2+1, %trim(bufr))
+                        endusing
+                    end
+                    else
+                    begin
+                        using pos2 select
+                        (0),
+                            nop
+                        (%trim(bufr)),
+                            bufr = ""
+                        (),
+                            bufr = bufr(pos2+1, %trim(bufr))
+                        endusing
+                    end
+                end
+            end
+
+            writes(oChan, bufr(1:%trim(bufr)), newEof)
+
+            ;; process VPJ file
+            if(pos = %instr(1, bufr, projectTag))
+            begin
+                pos += %size(projectTag)
+                if(bufr(pos:1) == '"')
+                begin
+                    pos2 = %instr(pos+1, bufr, '"')
+                    if(pos2 > 0)
+                    begin
+                        data vpjFilename    ,string
+                        data pos3 ,i4
+                        while(pos3 = %instr(1, bufr, '/'))
+                            bufr(pos3:1) = '\'
+
+                        if(rootFolder != ^NULL && rootFolder.Length > 0) then
+                            vpjFilename = rootFolder + bufr(pos+1, pos2-1)
+                        else
+                            vpjFilename = bufr(pos+1, pos2-1)
+
+                        ok = %processVPJ(vpjFilename, logChan)
+                    end
+                end
+            end
+        end
+
+        if(FALSE)
+        begin
+newEof,
+            throw new Exception("EndOfFile error writing to " + newFilename)
+        end
+
+vpwEof,
+        close oChan
+        clear oChan
+
+        if(FALSE)
+        begin
+newOpenFailure,
+            throw new Exception("Error " + %string(%error) + " opening " + newFilename)
+        end
+
+        close iChan
+        close iChan
+
+        if(ok == true)
+        begin
+            try
+            begin
+                delet(vpwFilename)
+            end
+            catch (e)
+            begin
+                throw new Exception("Error " + %string(%error) + " deleting " + vpwFilename)
+                ok = false
+            end
+            endtry
+
+            try
+            begin
+                renam(vpwFilename, newFilename)
+            end
+            catch (e)
+            begin
+                throw new Exception("Error " + %string(%error) + " renaming " + vpwFilename + " to " + newFilename)
+                ok = false
+            end
+            endtry
+        end
+
+        if(FALSE)
+        begin
+vpwOpenFailure,
+            throw new Exception("Error " + %string(%error) + " opening " + vpwFilename)
+        end
+
+        if(FALSE)
+        begin
+vpwOpenUpdateFailure,
+            throw new Exception("Error " + %string(%error) + " opening " + vpwFilename)
+        end
+
+        if(ok == true) then
+            writes(logChan, "Added VCS to " + vpwFilename)
+        else
+        begin
+            writes(logChan, "Did not add VCS to " + vpwFilename)
+            xcall delet(newFilename)
+        end
+    end
+    catch (e, @exception)
+        writes(logChan,  vpwFilename + " : " + e.ToString())
+    endtry
+
+    if(oChan)
+    begin
+        purge oChan
+        clear oChan
+    end
+
+    if(iChan)
+    begin
+        close iChan
+        clear iChan
+    end
+
+    freturn ok
+
+endfunction
+
+;****************************************************************************
+

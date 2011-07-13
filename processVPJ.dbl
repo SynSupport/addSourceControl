@@ -1,0 +1,162 @@
+;****************************************************************************
+; This routine process's a SlickEdit project file,
+; looks for the <Project> tag, and inserts the VCS tokens as attributes.
+
+function processVPJ, boolean
+    req in  vpjFilename     ,string
+    req in  logChan         ,i
+    endparams
+
+.define VCSINDENT       %char(9)
+
+    literal
+        projectTag      ,a40 ,'<Project'
+        vcsCheck        ,a* ,'VCSProject'
+        vcsProject      ,a* ,'VCSProject="SCC:SourceGear Vault VS2003 Compatible Client:$/Development/CodeExchange"'
+        vcsLocalPath    ,a* ,'VCSLocalPath="SCC:SourceGear Vault VS2003 Compatible Client:C:\Development\CodeExchange"'
+        vcsAuxPath      ,a* ,'VCSAuxPath="http://psgapps.synergex.com/VaultService|PSG Server:2"'
+
+    stack record
+        newFilename ,string
+        bufr        ,a1000
+        iChan       ,i4
+        oChan       ,i4
+        pos         ,i4
+        ok          ,boolean
+        inProject   ,boolean
+proc
+
+    ok = true
+    inProject = false
+
+    newFilename = vpjFilename + '_new'
+
+    try
+    begin
+        open(iChan=%syn_freechn, U, vpjFilename) [ERR=vpjOpenUpdateFailure]
+        close iChan
+
+        open(iChan=%syn_freechn, I, vpjFilename) [ERR=vpjOpenFailure]
+        open(oChan=%syn_freechn, O, newFilename) [ERR=newOpenFailure]
+
+        repeat
+        begin
+            reads(iChan, bufr, vpjEof)
+
+            if(inProject == true) then
+            begin
+                ;;do we already have version control setup
+                if(%instr(1, bufr, vcsCheck))
+                begin
+                    ok = false
+                    exitloop
+                end
+
+                ;;found end of project tag?
+                if(pos=%instr(1, bufr, '>')) then
+                begin
+                    writes(oChan, bufr(1:pos-1), newEof)
+                    writes(oChan, VCSINDENT + vcsProject, newEof)
+                    writes(oChan, VCSINDENT + vcsLocalPath, newEof)
+                    writes(oChan, VCSINDENT + vcsAuxPath + bufr(pos,%trim(bufr)), newEof)
+
+                    inProject = false
+                end
+                else
+                    writes(oChan, bufr(1:%trim(bufr)), newEof)
+            end
+            else
+            begin
+                writes(oChan, bufr(1:%trim(bufr)), newEof)
+
+                if(bufr == projectTag)
+                    inProject = true
+            end
+        end
+
+        if(FALSE)
+        begin
+newEof,
+            throw new Exception("EndOfFile error writing to " + newFilename)
+        end
+
+vpjEof,
+        close oChan
+        clear oChan
+
+        if(FALSE)
+        begin
+newOpenFailure,
+            throw new Exception("Error " + %string(%error) + " opening " + newFilename)
+        end
+
+        close iChan
+        close iChan
+
+        if(ok == true)
+        begin
+            try
+            begin
+                delet(vpjFilename)
+            end
+            catch (e)
+            begin
+                throw new Exception("Error " + %string(%error) + " deleting " + vpjFilename)
+                ok = false
+            end
+            endtry
+
+            try
+            begin
+                renam(vpjFilename, newFilename)
+            end
+            catch (e)
+            begin
+                throw new Exception("Error " + %string(%error) + " renaming " + vpjFilename + " to " + newFilename)
+                ok = false
+            end
+            endtry
+        end
+
+        if(FALSE)
+        begin
+vpjOpenFailure,
+            throw new Exception("Error " + %string(%error) + " opening " + vpjFilename)
+        end
+
+        if(FALSE)
+        begin
+vpjOpenUpdateFailure,
+            throw new Exception("Error " + %string(%error) + " opening " + vpjFilename)
+        end
+
+        if(ok == true) then
+            writes(logChan, "Added VCS to " + vpjFilename)
+        else
+        begin
+            writes(logChan, "Did not add VCS to " + vpjFilename)
+            xcall delet(newFilename)
+        end
+    end
+    catch (e, @exception)
+        writes(logChan,  vpjFilename + " : " + e.ToString())
+    endtry
+
+    if(oChan)
+    begin
+        purge oChan
+        clear oChan
+    end
+
+    if(iChan)
+    begin
+        close iChan
+        clear iChan
+    end
+
+    freturn ok
+
+endfunction
+
+;****************************************************************************
+

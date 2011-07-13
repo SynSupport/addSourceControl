@@ -1,0 +1,405 @@
+import Synergex.SynergyDE.Collections
+
+;****************************************************************************
+; v1.0 add VAULT source control information to SlickEdit project files
+; v2.0 process VPW files, and remove OEMVendorName info
+
+main
+
+    literal
+        appTitle    ,a* ,"AddSourceControl v2.0"
+
+    record
+        vpjFilename ,string
+        bufr        ,a1000
+        ok          ,boolean
+        pos         ,i4
+
+proc
+
+    flags(7004020, 1)
+
+    cmdln(bufr)
+
+    if(%instr(1, bufr, ' -? '))
+    begin
+        data ttChan     ,i4
+
+        open(ttChan = %syn_freechn, O, 'TT:')
+
+        writes(ttChan, appTitle)
+
+        writes(ttChan, "")
+
+        writes(ttChan, "dbr addSourceControl [-f <dir> [-s] [-vpj] [-l <logfile>] ]")
+        writes(ttChan, "")
+        writes(ttChan, " -f <dir>     : search specified directory for files")
+        writes(ttChan, " -s           : search subfolders")
+        writes(ttChan, " -vpj         : search for VPJ files (default = VPW files)")
+        writes(ttChan, " -l <logfile> : output log to logfile")
+        writes(ttChan, "")
+        display(ttChan, "Press any key to continue ")
+        try
+            accept(ttChan, bufr(1:1), WAIT:10)
+        catch (e)
+            nop
+        endtry
+        close ttChan
+        stop D_EXIT_SUCCESS
+    end
+
+    if(pos=%instr(1, bufr, ' -f ')) then
+    begin
+        data vpjFiles   ,@ArrayList
+        data vpjFile    ,@a
+        data numFiles   ,i4 ,0
+        data pos2       ,i4 ,0
+        data logChan    ,i4 ,0
+        data processVpj ,boolean ,false
+
+        pos += 4
+        if(bufr(pos:1) == '"') then
+        begin
+            pos += 1
+            pos2 = pos+1
+            while(bufr(pos2:1) != '"' && pos2 <= %trim(bufr))
+                pos2 += 1
+            if(pos2 > %trim(bufr))
+            ttError("Invalid folder name")
+        end
+        else
+        begin
+            pos2 = pos+1
+            while(bufr(pos2:1) != ' ' && pos2 <= %trim(bufr))
+                pos2 += 1
+            pos2 -= 1
+        end
+        if(pos2 >= pos && bufr(pos,pos2)) then
+        begin
+            if(%instr(1, bufr, ' -vpj '))
+                processVpj = true
+
+            if(processVpj == true) then
+            begin
+                ;;get list of VPJ files
+                if(%instr(1, bufr, ' -s ')) then
+                    numFiles = %GetWinFiles(bufr(pos,pos2), vpjFiles, true, '*.vpj')
+                else
+                    numFiles = %GetWinFiles(bufr(pos,pos2), vpjFiles, false, '*.vpj')
+            end
+            else
+            begin
+                ;;get list of VPW files
+                if(%instr(1, bufr, ' -s ')) then
+                    numFiles = %GetWinFiles(bufr(pos,pos2), vpjFiles, true, '*.vpw')
+                else
+                    numFiles = %GetWinFiles(bufr(pos,pos2), vpjFiles, false, '*.vpw')
+            end
+
+            if(numFiles > 0) then
+            begin
+                data logFileName ,a260 ," "
+
+                ;;get log filename (if applicable)
+                if(pos=%instr(1, bufr, ' -l '))
+                begin
+                    pos += 4
+                    if(bufr(pos:1) == '"') then
+                    begin
+                        pos += 1
+                        pos2 = pos+1
+                        while(bufr(pos2:1) != '"' && pos2 <= %trim(bufr))
+                            pos2 += 1
+                        if(pos2 > %trim(bufr))
+                        ttError("Invalid folder name")
+                    end
+                    else
+                    begin
+                        pos2 = pos+1
+                        while(bufr(pos2:1) != ' ' && pos2 <= %trim(bufr))
+                            pos2 += 1
+                        pos2 -= 1
+                    end
+                    if(pos2 >= pos)
+                        logFileName = bufr(pos,pos2)
+                end
+
+                ;;open log file
+                if(logFileName) then
+                    open(logChan = %syn_freechn, O, logFileName)
+                else
+                    open(logChan = %syn_freechn, O, 'TT:')
+
+                writes(logChan, appTitle)
+
+                ;;process VPW/VPJ files
+                foreach vpjFile in vpjFiles
+                begin
+                    vpjFilename = (a)vpjFile
+                    if(processVpj == true) then
+                        ok = %processVPJ(vpjFilename, logChan)
+                    else
+                        ok = %processVPW(vpjFilename, logChan)
+                end
+
+                ;;close log file
+                close logChan
+            end
+            else
+                if(processVpj == true) then
+                    ttError("No VPJ files to convert")
+                else
+                    ttError("No VPW files to convert")
+        end
+        else
+            ttError("Invalid folder name")
+    end
+    else
+    begin
+        data ttChan     ,i4
+
+        open(ttChan = %syn_freechn, O, 'TT:')
+
+        writes(ttChan, appTitle)
+
+        repeat
+        begin
+            writes(ttChan, "")
+            display(ttChan, "VPW/VPJ filename : ")
+            reads(ttChan, bufr, done)
+            if(!bufr)
+                exitloop
+
+            vpjFilename = bufr(1:%trim(bufr))
+            locase bufr
+            if(%instr(1, bufr+' ', '.vpw ')) then
+                ok = %processVPW(vpjFilename, ttChan)
+            else
+                ok = %processVPJ(vpjFilename, ttChan)
+        end
+done,
+        close ttChan
+    end
+
+    stop D_EXIT_SUCCESS
+
+endmain
+
+;****************************************************************************
+
+function GetWinFiles, reentrant
+    req in      aDirectory  ,a
+    req inout   aFilenames  ,@ArrayList
+    req in      aRecursive  ,boolean
+    opt in      aFileSpec   ,a
+    endparams
+
+    static record
+        dll                 ,i4     ;DLL Handle
+    endrecord
+
+    stack record local_data
+        srch_hdl            ,i4     ;Search handle
+        dir                 ,a260   ;Search filespec
+        spec                ,a260   ;Search filespec
+        len                 ,i4     ;Length
+        fileCount           ,i4     ;number of files added
+        sts					,i4		;search status
+    endrecord
+
+.ifdef DBLNET
+    stack record
+        argArray			,[#]@*
+    endrecord
+.endc ;DBLNET
+
+    stack record WIN32_FIND_DATA
+        dwFileAttributes    ,i4     ;File attribute bit flags
+        ftCreationTime      ,i8     ;file creation time (UTC format)
+        ftLastAccessTime    ,i8     ;last access time (UTC format)
+        ftLastWriteTime     ,i8     ;last write time (UTC format)
+        nFileSizeHigh       ,i4     ;High-order 32 bits of file size (bytes)
+        nFileSizeLow        ,i4     ; Low-order 32 bits of file size (bytes)
+        Reserved0           ,i4     ;
+        Reserved1           ,i4     ;
+        cFileName           ,a260   ;Name of file (null-terminated string)
+        cAlternateFileName  ,a16    ;8.3 file name (null-terminated string
+    endrecord
+
+.define INVALID_HANDLE_VALUE        -1
+.define FILE_ATTRIBUTE_READONLY     %x(1)
+.define FILE_ATTRIBUTE_HIDDEN       %x(2)
+.define FILE_ATTRIBUTE_SYSTEM       %x(4)
+.define FILE_ATTRIBUTE_DIRECTORY    %x(10)
+.define FILE_ATTRIBUTE_ARCHIVE      %x(20)
+.define FILE_ATTRIBUTE_NORMAL       %x(80)
+.define FILE_ATTRIBUTE_TEMPORARY    %x(100)
+.define FILE_ATTRIBUTE_COMPRESSED   %x(800)
+.define FILE_ATTRIBUTE_OFFLINE      %x(1000)
+
+proc
+    clear fileCount
+
+    if(aDirectory(%trim(aDirectory):1) == '\') then
+        dir = aDirectory
+    else
+        dir = %atrim(aDirectory) + '\'
+
+    len = %trim(dir)
+    xcall fill(%char(0), spec)
+    if(^passed(aFileSpec) && aFileSpec)
+        spec(1:len+5) = dir(1:len) + aFileSpec
+
+    if(!dll)
+    begin
+        dll = %dll_open("kernel32.dll")
+        if(!dll)
+            freturn -1
+    end
+
+    ;;Look for the first file
+.ifdef DBLNET
+    begin
+        argArray = new object[2]
+        argArray[1] = (object)^addr(spec)
+        argArray[2] = (object)^addr(WIN32_FIND_DATA)
+        srch_hdl = %dll_netcall(dll, DLL_TYPE_WINAPI, 'FindFirstFileA', argArray)
+    end
+.else ;DBLNET
+    srch_hdl = %dll_call(dll, DLL_TYPE_WINAPI, "FindFirstFileA", ^addr(spec), ^addr(WIN32_FIND_DATA))
+.endc ;DBLNET
+    if (srch_hdl != INVALID_HANDLE_VALUE)
+    begin
+        do
+        begin
+            ;;is file really a directory?
+            if (!(dwFileAttributes .band. FILE_ATTRIBUTE_DIRECTORY))
+            begin
+                ;;Find end of file name in null-terminated string
+                len = %instr(1, cFileName, %char(0)) - 1
+                call addFileNameToCollection
+            end
+.ifdef DBLNET
+            begin
+                argArray = new object[2]
+                argArray[1] = (object)srch_hdl
+                argArray[2] = (object)^addr(WIN32_FIND_DATA)
+                srch_hdl = %dll_netcall(dll, DLL_TYPE_WINAPI, 'FindNextFileA', argArray)
+            end
+.else ;DBLNET
+            sts = %dll_call(dll, DLL_TYPE_WINAPI, "FindNextFileA", srch_hdl, ^addr(WIN32_FIND_DATA))
+.endc ;DBLNET
+        end
+        until(.not.sts)
+
+        ;;Close the search handle
+.ifdef DBLNET
+        begin
+            argArray = new object[1]
+            argArray[1] = (object)srch_hdl
+            sts = %dll_netcall(dll, DLL_TYPE_WINAPI, 'FindClose', argArray)
+        end
+.else ;DBLNET
+        sts = %dll_call(dll, DLL_TYPE_WINAPI, "FindClose", srch_hdl)
+.endc ;DBLNET
+    end
+
+    if(aRecursive)
+    begin
+        ;;look for directories, so we can recurse through them
+        len = %trim(dir)
+        xcall fill(%char(0), spec)
+        spec(1:len+1) = dir(1:len) + '*'
+.ifdef DBLNET
+        begin
+            argArray = new object[2]
+            argArray[1] = (object)^addr(spec)
+            argArray[2] = (object)^addr(WIN32_FIND_DATA)
+            srch_hdl = %dll_netcall(dll, DLL_TYPE_WINAPI, 'FindFirstFileA', argArray)
+        end
+.else ;DBLNET
+        srch_hdl = %dll_call(dll, DLL_TYPE_WINAPI, "FindFirstFileA", ^addr(spec), ^addr(WIN32_FIND_DATA))
+.endc ;DBLNET
+        if (srch_hdl != INVALID_HANDLE_VALUE)
+        begin
+            do
+            begin
+                ;;is file really a directory?
+                if (dwFileAttributes .band. FILE_ATTRIBUTE_DIRECTORY)
+                begin
+                    if (cFileName == '.'+%char(0))
+                        exit
+                    if (cFileName == '..'+%char(0))
+                        exit
+                    if (cFileName == '...'+%char(0))
+                        exit
+                    if (cFileName == '_sgbak'+%char(0))
+                        exit
+                    ;;Find end of file name in null-terminated string
+                    len = %instr(1, cFileName, %char(0)) - 1
+                    fileCount += %GetWinFiles(%atrim(dir)+cFileName(1:len), aFilenames, true, aFileSpec)
+                end
+.ifdef DBLNET
+                begin
+                    argArray = new object[2]
+                    argArray[1] = (object)srch_hdl
+                    argArray[2] = (object)^addr(WIN32_FIND_DATA)
+                    srch_hdl = %dll_netcall(dll, DLL_TYPE_WINAPI, 'FindNextFileA', argArray)
+                end
+.else ;DBLNET
+                sts = %dll_call(dll, DLL_TYPE_WINAPI, "FindNextFileA", srch_hdl, ^addr(WIN32_FIND_DATA))
+.endc ;DBLNET
+            end
+            until(.not.sts)
+
+            ;;Close the search handle
+.ifdef DBLNET
+            begin
+                argArray = new object[1]
+                argArray[1] = (object)srch_hdl
+                sts = %dll_netcall(dll, DLL_TYPE_WINAPI, 'FindClose', argArray)
+            end
+.else ;DBLNET
+            sts = %dll_call(dll, DLL_TYPE_WINAPI, "FindClose", srch_hdl)
+.endc ;DBLNET
+        end
+    end
+
+    freturn fileCount
+
+;----------------------------------------------------------------------------
+
+addFileNameToCollection,
+
+    fileCount += 1
+
+    if (aFilenames == ^null)
+        aFilenames = new ArrayList()
+    aFilenames.Add((@a)(dir(1:%trim(dir))+cFileName(1:len)))
+
+    return
+
+endfunction
+
+;****************************************************************************
+
+subroutine ttError
+    req in  ttMessage       ,a
+    endparams
+
+    record
+        chan        ,i4
+
+proc
+    open(chan=%syn_freechn, O, 'TT:')
+
+    writes(chan, ttMessage)
+
+    close chan
+
+    stop D_EXIT_FAILURE
+
+endsubroutine
+
+;****************************************************************************
+
